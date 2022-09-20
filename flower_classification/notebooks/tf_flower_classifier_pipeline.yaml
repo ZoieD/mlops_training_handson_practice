@@ -2,7 +2,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
   generateName: flower-classifier-using-tensorflow-
-  annotations: {pipelines.kubeflow.org/kfp_sdk_version: 1.8.13, pipelines.kubeflow.org/pipeline_compilation_time: '2022-09-20T04:04:51.005560',
+  annotations: {pipelines.kubeflow.org/kfp_sdk_version: 1.8.13, pipelines.kubeflow.org/pipeline_compilation_time: '2022-09-20T13:02:53.180746',
     pipelines.kubeflow.org/pipeline_spec: '{"description": "Continues training a pretrained
       flower classification model, then tests serving it.", "inputs": [{"default":
       "https://storage.googleapis.com/download.tensorflow.org/example_images/flower_photos.tgz",
@@ -17,8 +17,7 @@ spec:
   - name: evaluate-task
     container:
       args: [--data-dir, /tmp/inputs/data_dir/data, --model-dir, /tmp/inputs/model_dir/data,
-        --batch-size, '{{inputs.parameters.batch_size}}', --metrics, /tmp/outputs/metrics/data,
-        '----output-paths', /tmp/outputs/mlpipeline_metrics/data]
+        --batch-size, '{{inputs.parameters.batch_size}}', --mlpipeline-metrics, /tmp/outputs/mlpipeline_metrics/data]
       command:
       - sh
       - -ec
@@ -36,8 +35,7 @@ spec:
             data_dir,
             model_dir,
             batch_size,
-            metrics_path
-        ):
+            mlpipeline_metrics_path):
             """Loads a saved model from file and uses a pre-downloaded dataset for evaluation.
             Model metrics are persisted to `/mlpipeline-metrics.json` for Kubeflow Pipelines
             metadata."""
@@ -71,44 +69,31 @@ spec:
             reloaded.summary()
             eval_results = reloaded.evaluate(test_ds)
             print('Test loss & accuracy: %s' % (eval_results,))
+
             # save results to json
-            metrics_dict = {}
+            metrics = []
             for metric, value in zip(reloaded.metrics_names, eval_results):
-                print(metric + ': {:.4f}'.format(value))
-                metrics_dict.update({f'{metric}': value})
+                metrics.append({
+                    'name': metric,
+                    'numberValue': round(value, 4),
+                    'format': "PERCENTAGE"
+                })
 
-            with open(metrics_path, 'w') as f:
+            metrics_dict = {'metrics': metrics}
+            metrics_dict
+
+            with open(mlpipeline_metrics_path, 'w') as f:
                 json.dump(metrics_dict, f)
-
-            out_tuple = namedtuple("EvaluationOutput", ["mlpipeline_metrics"])
-
-            return out_tuple(json.dumps(metrics_dict))
 
         import argparse
         _parser = argparse.ArgumentParser(prog='Evaluate task', description='Loads a saved model from file and uses a pre-downloaded dataset for evaluation.')
         _parser.add_argument("--data-dir", dest="data_dir", type=str, required=True, default=argparse.SUPPRESS)
         _parser.add_argument("--model-dir", dest="model_dir", type=str, required=True, default=argparse.SUPPRESS)
         _parser.add_argument("--batch-size", dest="batch_size", type=int, required=True, default=argparse.SUPPRESS)
-        _parser.add_argument("--metrics", dest="metrics_path", type=_make_parent_dirs_and_return_path, required=True, default=argparse.SUPPRESS)
-        _parser.add_argument("----output-paths", dest="_output_paths", type=str, nargs=1)
+        _parser.add_argument("--mlpipeline-metrics", dest="mlpipeline_metrics_path", type=_make_parent_dirs_and_return_path, required=True, default=argparse.SUPPRESS)
         _parsed_args = vars(_parser.parse_args())
-        _output_files = _parsed_args.pop("_output_paths", [])
 
         _outputs = evaluate_task(**_parsed_args)
-
-        _output_serializers = [
-            str,
-
-        ]
-
-        import os
-        for idx, output_file in enumerate(_output_files):
-            try:
-                os.makedirs(os.path.dirname(output_file))
-            except OSError:
-                pass
-            with open(output_file, 'w') as f:
-                f.write(_output_serializers[idx](_outputs[idx]))
       image: zdou001/only_tests:flower-nightly
     inputs:
       parameters:
@@ -119,7 +104,6 @@ spec:
     outputs:
       artifacts:
       - {name: mlpipeline-metrics, path: /tmp/outputs/mlpipeline_metrics/data}
-      - {name: evaluate-task-metrics, path: /tmp/outputs/metrics/data}
     metadata:
       labels:
         pipelines.kubeflow.org/kfp_sdk_version: 1.8.13
@@ -129,11 +113,11 @@ spec:
           a saved model from file and uses a pre-downloaded dataset for evaluation.",
           "implementation": {"container": {"args": ["--data-dir", {"inputPath": "data_dir"},
           "--model-dir", {"inputPath": "model_dir"}, "--batch-size", {"inputValue":
-          "batch_size"}, "--metrics", {"outputPath": "metrics"}, "----output-paths",
-          {"outputPath": "mlpipeline_metrics"}], "command": ["sh", "-ec", "program_path=$(mktemp)\nprintf
-          \"%s\" \"$0\" > \"$program_path\"\npython3 -u \"$program_path\" \"$@\"\n",
-          "def _make_parent_dirs_and_return_path(file_path: str):\n    import os\n    os.makedirs(os.path.dirname(file_path),
-          exist_ok=True)\n    return file_path\n\ndef evaluate_task(\n    data_dir,\n    model_dir,\n    batch_size,\n    metrics_path\n):\n    \"\"\"Loads
+          "batch_size"}, "--mlpipeline-metrics", {"outputPath": "mlpipeline_metrics"}],
+          "command": ["sh", "-ec", "program_path=$(mktemp)\nprintf \"%s\" \"$0\" >
+          \"$program_path\"\npython3 -u \"$program_path\" \"$@\"\n", "def _make_parent_dirs_and_return_path(file_path:
+          str):\n    import os\n    os.makedirs(os.path.dirname(file_path), exist_ok=True)\n    return
+          file_path\n\ndef evaluate_task(\n    data_dir,\n    model_dir,\n    batch_size,\n    mlpipeline_metrics_path):\n    \"\"\"Loads
           a saved model from file and uses a pre-downloaded dataset for evaluation.\n    Model
           metrics are persisted to `/mlpipeline-metrics.json` for Kubeflow Pipelines\n    metadata.\"\"\"\n    import
           tensorflow as tf\n    import tensorflow_hub as hub\n    import json\n    import
@@ -145,27 +129,23 @@ spec:
           = test_ds.cache().prefetch(buffer_size=AUTOTUNE)\n\n    # model_loading
           = os.path.join(model_dir, model_version)\n    reloaded = tf.keras.models.load_model(model_dir)\n    #
           Check its architecture\n    reloaded.summary()\n    eval_results = reloaded.evaluate(test_ds)\n    print(''Test
-          loss & accuracy: %s'' % (eval_results,))\n    # save results to json\n    metrics_dict
-          = {}\n    for metric, value in zip(reloaded.metrics_names, eval_results):\n        print(metric
-          + '': {:.4f}''.format(value))\n        metrics_dict.update({f''{metric}'':
-          value})\n\n    with open(metrics_path, ''w'') as f:\n        json.dump(metrics_dict,
-          f)\n\n    out_tuple = namedtuple(\"EvaluationOutput\", [\"mlpipeline_metrics\"])\n\n    return
-          out_tuple(json.dumps(metrics_dict))\n\nimport argparse\n_parser = argparse.ArgumentParser(prog=''Evaluate
+          loss & accuracy: %s'' % (eval_results,))\n\n    # save results to json\n    metrics
+          = []\n    for metric, value in zip(reloaded.metrics_names, eval_results):\n        metrics.append({\n            ''name'':
+          metric,\n            ''numberValue'': round(value, 4),\n            ''format'':
+          \"PERCENTAGE\"\n        })\n\n    metrics_dict = {''metrics'': metrics}\n    metrics_dict\n\n    with
+          open(mlpipeline_metrics_path, ''w'') as f:\n        json.dump(metrics_dict,
+          f)\n\nimport argparse\n_parser = argparse.ArgumentParser(prog=''Evaluate
           task'', description=''Loads a saved model from file and uses a pre-downloaded
           dataset for evaluation.'')\n_parser.add_argument(\"--data-dir\", dest=\"data_dir\",
           type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--model-dir\",
           dest=\"model_dir\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--batch-size\",
-          dest=\"batch_size\", type=int, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--metrics\",
-          dest=\"metrics_path\", type=_make_parent_dirs_and_return_path, required=True,
-          default=argparse.SUPPRESS)\n_parser.add_argument(\"----output-paths\", dest=\"_output_paths\",
-          type=str, nargs=1)\n_parsed_args = vars(_parser.parse_args())\n_output_files
-          = _parsed_args.pop(\"_output_paths\", [])\n\n_outputs = evaluate_task(**_parsed_args)\n\n_output_serializers
-          = [\n    str,\n\n]\n\nimport os\nfor idx, output_file in enumerate(_output_files):\n    try:\n        os.makedirs(os.path.dirname(output_file))\n    except
-          OSError:\n        pass\n    with open(output_file, ''w'') as f:\n        f.write(_output_serializers[idx](_outputs[idx]))\n"],
-          "image": "zdou001/only_tests:flower-nightly"}}, "inputs": [{"name": "data_dir",
-          "type": "String"}, {"name": "model_dir", "type": "String"}, {"name": "batch_size",
-          "type": "Integer"}], "name": "Evaluate task", "outputs": [{"name": "metrics",
-          "type": "String"}, {"name": "mlpipeline_metrics", "type": "Metrics"}]}',
+          dest=\"batch_size\", type=int, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--mlpipeline-metrics\",
+          dest=\"mlpipeline_metrics_path\", type=_make_parent_dirs_and_return_path,
+          required=True, default=argparse.SUPPRESS)\n_parsed_args = vars(_parser.parse_args())\n\n_outputs
+          = evaluate_task(**_parsed_args)\n"], "image": "zdou001/only_tests:flower-nightly"}},
+          "inputs": [{"name": "data_dir", "type": "String"}, {"name": "model_dir",
+          "type": "String"}, {"name": "batch_size", "type": "Integer"}], "name": "Evaluate
+          task", "outputs": [{"name": "mlpipeline_metrics", "type": "Metrics"}]}',
         pipelines.kubeflow.org/component_ref: '{}', pipelines.kubeflow.org/arguments.parameters: '{"batch_size":
           "{{inputs.parameters.batch_size}}"}'}
   - name: flower-classifier-using-tensorflow
